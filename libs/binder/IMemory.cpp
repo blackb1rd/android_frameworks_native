@@ -26,13 +26,14 @@
 #include <sys/mman.h>
 
 #include <binder/IMemory.h>
+#include <cutils/log.h>
 #include <utils/KeyedVector.h>
 #include <utils/threads.h>
 #include <utils/Atomic.h>
 #include <binder/Parcel.h>
 #include <utils/CallStack.h>
 
-#ifdef USE_V4L2_ION
+#ifdef USE_MEMORY_HEAP_ION
 #include "ion.h"
 #endif
 
@@ -191,15 +192,26 @@ sp<IMemoryHeap> BpMemory::getMemory(ssize_t* offset, size_t* size) const
             if (heap != 0) {
                 mHeap = interface_cast<IMemoryHeap>(heap);
                 if (mHeap != 0) {
-                    mOffset = o;
-                    mSize = s;
+                    size_t heapSize = mHeap->getSize();
+                    if (s <= heapSize
+                            && o >= 0
+                            && (static_cast<size_t>(o) <= heapSize - s)) {
+                        mOffset = o;
+                        mSize = s;
+                    } else {
+                        // Hm.
+                        android_errorWriteWithInfoLog(0x534e4554,
+                            "26877992", -1, NULL, 0);
+                        mOffset = 0;
+                        mSize = 0;
+                    }
                 }
             }
         }
     }
     if (offset) *offset = mOffset;
     if (size) *size = mSize;
-    return mHeap;
+    return (mSize > 0) ? mHeap : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,11 +315,11 @@ void BpMemoryHeap::assertReallyMapped() const
         ALOGE_IF(err, "binder=%p transaction failed fd=%d, size=%ld, err=%d (%s)",
                 asBinder().get(), parcel_fd, size, err, strerror(-err));
 
-#ifdef USE_V4L2_ION
-        int ion_client = -1;
+#ifdef USE_MEMORY_HEAP_ION
+        ion_client ion_client_num = -1;
         if (flags & USE_ION_FD) {
-            ion_client = ion_client_create();
-            ALOGE_IF(ion_client < 0, "BpMemoryHeap : ion client creation error");
+            ion_client_num = ion_client_create();
+            ALOGE_IF(ion_client_num < 0, "BpMemoryHeap : ion client creation error");
         }
 #endif
 
@@ -324,9 +336,9 @@ void BpMemoryHeap::assertReallyMapped() const
         if (mHeapId == -1) {
             mRealHeap = true;
 
-#ifdef USE_V4L2_ION
+#ifdef USE_MEMORY_HEAP_ION
         if (flags & USE_ION_FD) {
-            if (ion_client < 0)
+            if (ion_client_num < 0)
                 mBase = MAP_FAILED;
             else
                 mBase = ion_map(fd, size, offset);
@@ -344,11 +356,11 @@ void BpMemoryHeap::assertReallyMapped() const
                 android_atomic_write(fd, &mHeapId);
             }
         }
-#ifdef USE_V4L2_ION
-        if (ion_client < 0)
-            ion_client = -1;
+#ifdef USE_MEMORY_HEAP_ION
+        if (ion_client_num < 0)
+            ion_client_num = -1;
         else
-            ion_client_destroy(ion_client);
+            ion_client_destroy(ion_client_num);
 #endif
     }
 }
